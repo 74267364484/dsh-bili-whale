@@ -1,5 +1,5 @@
 export function watchOptions(args,defaultDir) {
-  const positional=[];let tile=720
+  const positional=[];let tile=768
   for(let i=0;i<args.length;i++) {
     const arg=args[i]
     if(arg==='--tile'||arg.startsWith('--tile=')) {
@@ -9,5 +9,5 @@ export function watchOptions(args,defaultDir) {
     } else if(!arg.startsWith('--'))positional.push(arg)
     else if(arg!=='--uniform')throw Error('未知抽帧选项：'+arg)
   }
-  return {bvid:positional[0],grid:(positional[1]??'3x3').toLowerCase(),outDir:positional[2]??defaultDir,tile}
+  return {bvid:positional[0],grid:(positional[1]??'5x5').toLowerCase(),outDir:positional[2]??defaultDir,tile}
 }

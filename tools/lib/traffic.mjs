@@ -4,7 +4,9 @@ import crypto from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { configPath } from './paths.mjs'
 
-export const RISK_DEFAULTS = { minGapMs: 1500, readHourly: 600, readDaily: 3000, writeHourly: 12, writeDaily: 30, writeGapSec: 120, dmGapSec: 60 }
+// 2026-10-28 主人定「不要有数量限制」→ 写预算默认放开（0 = 不限）✓
+//   保留 writeGapSec（写间隔）—— 那是防风控的**节奏**，不是条数上限 ✓
+export const RISK_DEFAULTS = { minGapMs: 1500, readHourly: 600, readDaily: 3000, writeHourly: 0, writeDaily: 0, writeGapSec: 120, dmGapSec: 60 }
 const digest = value => crypto.createHash('sha256').update(value).digest('hex')
 export function riskSettings() {
   let cfg = {}
@@ -13,8 +15,9 @@ export function riskSettings() {
   for (const key of Object.keys(result)) {
     const n = Number(cfg[key])
     // 2026-10-23 改：dmGapSec 允许 0（主人要求「私信冷却不要」✗）
-    //   其他预算类仍然是 >0 才生效 ✓（0 会被当成没填 ✓ 防手滑关掉闸门）
-    if (Number.isFinite(n) && (n > 0 || key === 'dmGapSec')) result[key] = Math.max(0, Math.floor(n))
+    // 2026-10-28 改：writeHourly / writeDaily 也允许 0 = **不限条数** ✓（主人要求「不要有数量限制」）
+    //   其余预算类仍然是 >0 才生效 ✓（0 会被当成没填 ✓ 防手滑关掉闸门）
+    if (Number.isFinite(n) && (n > 0 || key === 'dmGapSec' || key === 'writeHourly' || key === 'writeDaily')) result[key] = Math.max(0, Math.floor(n))
   }
   result.minGapMs = Math.max(500, result.minGapMs)
   result.writeGapSec = Math.max(30, result.writeGapSec)
@@ -117,7 +120,10 @@ export function createTrafficGuard({ directory, transport = (...a) => globalThis
         if (Object.keys(s.operations).length >= 2000) throw new TrafficError('发送记录已满，请先核查未确认操作')
         const gap = (url.pathname.endsWith('/send_msg') ? cfg.dmGapSec : cfg.writeGapSec) * 1000
         if (a.lastWrite && timestamp - a.lastWrite < gap && !url.pathname.endsWith('/reply/del')) throw Object.assign(new TrafficError('写操作冷却中，请稍后再发送'), { cooldownMs: a.lastWrite + gap - timestamp })
-        if ((a.writeHour ?? 0) >= cfg.writeHourly || (a.writeDay ?? 0) >= cfg.writeDaily) throw new TrafficError('已达到本地写操作预算，本次不发送')
+        // 2026-10-28：写预算 0 = 不限 ✓（主人要求「不要有数量限制」）
+        //   0 时这两个判断整体跳过 —— 写条数不再被本地预算卡住 ✓
+        if ((cfg.writeHourly > 0 && (a.writeHour ?? 0) >= cfg.writeHourly)
+          || (cfg.writeDaily > 0 && (a.writeDay ?? 0) >= cfg.writeDaily)) throw new TrafficError('已达到本地写操作预算，本次不发送')
       } else if ((a.readHour ?? 0) >= cfg.readHourly || (a.readDay ?? 0) >= cfg.readDaily) throw new TrafficError('已达到本地读取预算，请等待预算窗口恢复')
       const slot = Math.max(timestamp, Number(s.nextAt ?? 0))
       if (slot - timestamp > 30000) throw new TrafficError('请求队列已满，本次停止')

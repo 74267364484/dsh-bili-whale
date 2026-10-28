@@ -106,8 +106,8 @@ if (cmd === 'status') {
   const used = usedToday(q)
   const usedAuto = q.log.filter((x) => dayOf(x.at) === today() && x.auto && !x.share).length
   const usedShare = q.log.filter((x) => dayOf(x.at) === today() && x.share).length
-  console.log(`今日对外发言: 共 ${used} 条（**分享型** ${usedShare}/${q.shareDaily ?? 3} · 自主发言不设条数上限 ✓ · 主人授权 ${used - usedAuto - usedShare} 条）   日期 ${today()}`)
-  console.log(`缰绳：分享 ≤${q.shareDaily ?? 3}/天 · 评分卡 ≥${config().share?.minScore ?? 13}/20 · 同一视频 7 天一次 · 署名复核 · 事后报备`)
+  console.log(`今日对外发言: 共 ${used} 条（**分享型** ${usedShare} · 自主发言 ${usedAuto} · 主人授权 ${used - usedAuto - usedShare}）   日期 ${today()}`)
+  console.log(`缰绳：评分卡 ≥${config().share?.minScore ?? 13}/20 · 署名复核 · 事后报备 · 条数不限 ✓（2026-10-28 主人定）`)
   console.log(`已删除（2026-10-18 主人定）：白名单 ✗ · 「自主 N 条」独立额度 ✗`)
   const recent = q.log.slice(-5)
   console.log(recent.length ? '最近记录:' : '最近记录: (无)')
@@ -134,21 +134,11 @@ if (cmd === 'check') {
   //   ① 每天合计 ≤ shareDaily（跨多次醒来共享）② 同一视频 7 天内只能一次 ③ 正文必须 @ 主人
   if (share) {
     if (config().share?.enabled === false) { console.error("分享已关闭"); process.exit(2) }
+    // 2026-10-28 主人定「不要有数量限制」→ 分享条数上限与"同一视频 7 天一次"全部解除 ✓
+    //   保留的只有：开关关掉就不发 + 评分卡（见 share-policy.mjs）
     const sil = silence()
-    const effCap = Math.min(shareDaily, sil.cap)
-    if (sil.penalty > 0) console.log(`  [沉默衰减] ${sil.days} 天没有任何表态 → 分享上限 ${shareDaily} → ${effCap}${effCap === 0 ? '（已停止分享；日记照常）' : ''}`)
-    if (usedShare >= effCap) {
-      console.log(`✗ 分享额度已用完：今天已经 @ 了 ${usedShare} 条（有效上限 ${effCap}）—— 剩下的留给明天，别硬发。`)
-      process.exit(2)
-    }
-    if (target) {
-      const dup = q.log.find((x) => x.share && String(x.target ?? '') === target && Date.now() - new Date(x.at).getTime() < SEVEN)
-      if (dup) {
-        console.log(`✗ 这个视频 7 天内已经分享过了：${dup.at}（${dup.target}）`)
-        process.exit(2)
-      }
-    }
-    console.log(`✓ 分享额度内（${usedShare}/${shareDaily}）${target ? `，target=${target}` : ''} —— 分享型不看白名单，但同一视频 7 天内只能一次`)
+    console.log(`✓ 分享额度已放开（今天已发 ${usedShare} 条，不再限条数）${target ? `，target=${target}` : ''}`)
+    if (sil.penalty > 0) console.log(`  （主人 ${sil.days} 天没表态 —— 但主人说了「不要有数量限制」，所以照发 ✓）`)
     process.exit(0)
   }
   // 语义（2026-10-14 定；**2026-10-18 简化**：删除「自主 2 条」这个独立额度 ✗ —— 主人定：基本没用 ✓）
@@ -169,7 +159,7 @@ if (cmd === 'record') {
   save(q)
   const usedAuto = q.log.filter((x) => dayOf(x.at) === today() && x.auto && !x.share).length
   const usedShare = q.log.filter((x) => dayOf(x.at) === today() && x.share).length
-  console.log(`已记账：${type}${opt.share ? '（分享型·@主人）' : opt.auto ? '（自主）' : '（主人授权）'}${opt.target ? ' → ' + opt.target : ''}   今日分享 ${usedShare}/${q.shareDaily ?? 3}（自主发言不设上限 ✓）`)
+  console.log(`已记账：${type}${opt.share ? '（分享型·@主人）' : opt.auto ? '（自主）' : '（主人授权）'}${opt.target ? ' → ' + opt.target : ''}   今日共 ${usedShare + usedAuto} 条自主/分享发言（条数不限 ✓）`)
   process.exit(0)
 }
 

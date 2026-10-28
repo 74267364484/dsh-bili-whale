@@ -3,9 +3,10 @@ import { guardedFetch as fetch } from '../lib/traffic.mjs'
 import { apiGet } from '../lib/bili-api.mjs'
 // 让 agent 真"看"视频：取直链 → 下载 → ffmpeg 抽帧拼成一张九宫格 → 输出图片路径（再交给 read_image 看）
 //
-// 用法: node bili-watch.mjs <BV号> [列x行，默认 3x3] [outDir]
-//   例: node bili-watch.mjs BV1iLYm6VET3            → 3x3 九宫格
-//       node bili-watch.mjs BV1iLYm6VET3 4x4        → 16 格，看得更细
+// 用法: node bili-watch.mjs <BV号> [列x行，默认 5x5] [outDir] [--tile 768]
+//   例: node bili-watch.mjs BV1iLYm6VET3            → 5x5（25 格，本机默认）
+//       node bili-watch.mjs BV1iLYm6VET3 4x4        → 16 格，单格更大
+//       node bili-watch.mjs BV1iLYm6VET3 5x5 --tile 960 → 更高清单格
 //
 // 依赖：ffmpeg（查找顺序见 lib/ffmpeg.mjs：$FFMPEG → PATH → bin/ → ~/.dsh/bili-whale/bin → 本机剪映）
 import fs from 'node:fs'

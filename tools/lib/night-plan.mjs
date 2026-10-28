@@ -17,10 +17,12 @@ export function windowsOf(cfg) {
   return list.map(w => {
     const start = parse(w.start), rawEnd = parse(w.end)
     const end = rawEnd <= start ? rawEnd + 1440 : rawEnd
-    return { start, end, wrap: end > 1440, label: `${w.start}–${w.end}`, wakes: Math.min(12, Math.max(0, Math.floor(Number(w.wakes ?? 1) || 0))) }
+    // 2026-10-28 主人定「不要有数量限制」→ 去掉原来的 Math.min(12, …) 硬上限 ✓
+    //   只保底为 0（负数/NaN 归零），上限交给配置说了算
+    return { start, end, wrap: end > 1440, label: `${w.start}–${w.end}`, wakes: Math.max(0, Math.floor(Number(w.wakes ?? 1) || 0)) }
   })
 }
-export const maxWakes = cfg => Math.min(12, windowsOf(cfg).reduce((n, w) => n + w.wakes, 0))
+export const maxWakes = cfg => windowsOf(cfg).reduce((n, w) => n + w.wakes, 0)
 export function occurrences(cfg, now = Date.now()) {
   const today = dayOf(now), yesterday = new Date(`${today}T00:00:00`)
   yesterday.setDate(yesterday.getDate() - 1)

@@ -149,17 +149,16 @@ if (SHARE) {
     process.exit(3)
   }
   if (!AUTO) { console.error('--share 必须与 --auto 同传（分享型也是"她自己决定说的"）'); process.exit(2) }
-  const ow = config().owner ?? {}
-  if (!ow.name) { console.error('--share 需要先配置 owner.name（要 @ 谁）'); process.exit(2) }
   try { validateShare(config(), { reason: args.get('reason'), score: args.get('score'), rank: args.get('rank') ?? 1 }) }
   catch (e) { console.error(e.message); process.exit(2) }
 
-  const want = `@${ow.name}`
+  // 2026-10-28 主人定「可以不艾特我」→ **不再强制 @ 主人** ✓
+  //   以前：正文没 @ 就自动补上，含别的 @ 就拒绝发送 ✗
+  //   现在：原样发送。想 @ 主人就自己写在正文里 ✓
+  const ow = config().owner ?? {}
   const body = String(message ?? '').trimStart()
-  if (!body.startsWith(want)) {
-    if (body.includes('@')) { console.error(`--share 的正文必须以 "${want}" 开头（里面那个 @ 不是主人）→ 拒绝发送`); process.exit(2) }
-    message = `${want} ${message}`
-    console.log(`[分享型] 正文没 @，已自动补：${want}`)
+  if (ow.name && !body.includes(`@${ow.name}`)) {
+    console.log('[分享型] 正文没有 @ 主人 —— 主人说了「可以不艾特我」，照发 ✓')
   }
 }
 
