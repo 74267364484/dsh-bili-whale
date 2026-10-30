@@ -26,6 +26,10 @@ export async function readHistory(owner,headers,state,{baseline=false}={}) {
     const query=signWbi({talker_id:owner,session_type:1,size:30,begin_seqno:cursor},nav.data.wbi_img)
     const response=await fetch('https://api.vc.bilibili.com/svr_sync/v1/svr_sync/fetch_session_msgs?'+query,{headers})
     const body=await exactJson(response)
+    // 2026-10-30 修：code=0 但 data.messages 不是数组 = **这个 talker 没有私信会话**
+    //   （实测 fetch_session_msgs 对没会话的号返回 code=0 + messages=null ✗）
+    //   它不是失败 → 当成"没有消息"正常返回，别再抛错（错误日志已经堆到 57KB ✗）
+    if(body.code===0&&!Array.isArray(body.data?.messages))return {all:[],messages:[]}
     if(!response.ok||body.code!==0||!Array.isArray(body.data?.messages))throw Error('私信历史读取失败，保留游标（code='+body.code+'）')
     const rows=body.data.messages.map(normalizeMessage)
     for(const row of rows)if(!seen.has(row.key)){seen.add(row.key);all.push(row)}

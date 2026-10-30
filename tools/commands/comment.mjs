@@ -152,13 +152,17 @@ if (SHARE) {
   try { validateShare(config(), { reason: args.get('reason'), score: args.get('score'), rank: args.get('rank') ?? 1 }) }
   catch (e) { console.error(e.message); process.exit(2) }
 
-  // 2026-10-28 主人定「可以不艾特我」→ **不再强制 @ 主人** ✓
-  //   以前：正文没 @ 就自动补上，含别的 @ 就拒绝发送 ✗
-  //   现在：原样发送。想 @ 主人就自己写在正文里 ✓
+  // 2026-10-30 主人定：**分享型必须 @ 到主人** ✓（恢复 10-28 之前的自动补 @）
+  //   动机：主人在评论区看到「没有 @ 我」→ 以为机器人没艾特他 ✗
+  //   做法：正文里没有 @<owner.name> 时，自动在**开头**补上（改 message 变量，
+  //         真正发出去的正文就带 @ ✓ —— params 在后面才构造）
   const ow = config().owner ?? {}
   const body = String(message ?? '').trimStart()
   if (ow.name && !body.includes(`@${ow.name}`)) {
-    console.log('[分享型] 正文没有 @ 主人 —— 主人说了「可以不艾特我」，照发 ✓')
+    message = `@${ow.name} ${body}`.trim()
+    console.log(`[分享型] 正文没有 @ 主人 → 自动补上「@${ow.name}」✓（这才是主人要的）`)
+  } else {
+    console.log(`[分享型] 正文已 @ 主人「${ow.name}」✓ 原样发送`)
   }
 }
 

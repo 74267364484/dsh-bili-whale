@@ -32,7 +32,7 @@ const operatorUid = Number(
   args.get('operator-uid')
   ?? (liveScope === 'owner' ? (config().owner?.mid ?? 0) : 0),
 )
-const anchorUid = Number(args.get('anchor-uid') ?? 0)
+let anchorUid = Number(args.get('anchor-uid') ?? 0)
 const timeoutSec = Number(args.get('timeout') ?? 900)
 const noCatchup = args.has('no-catchup')
 // 按人拉黑（逗号分隔）：机器人/复读账号别跟它对刷（比如某个总在刷同一句话的号）
@@ -77,6 +77,17 @@ try {
   if (u && !SELF_NAMES.includes(String(u))) SELF_NAMES.push(String(u))
   log(`自身账号: ${u ?? '?'} (mid ${navNow.data?.mid ?? '?'})  识别名: ${SELF_NAMES.join(' / ')}`)
 } catch {}
+
+// 主播 uid 自取（2026-10-30）：Room/get_info 的 data.uid 就是主播号。
+// 以前 anchorUid 只能靠外面传 --anchor-uid，而 scheduler 从来不传 → anchor 通路是死代码 ✗
+// 现在自己取，取不到就退化成 0（不影响 operator / @我 两条通路）。
+if (!anchorUid) {
+  try {
+    const info = await jget(`https://api.live.bilibili.com/room/v1/Room/get_info?room_id=${roomArg}`)
+    anchorUid = Number(info?.data?.uid ?? 0) || 0
+    log(`主播 uid: ${anchorUid || '(取不到 → anchor 通路关闭)'}`)
+  } catch { log('主播 uid 取不到 → anchor 通路关闭') }
+}
 
 // --seed：把"当前历史里的全部弹幕"标记为已处理，之后只回新消息。
 // 用途：监听断过一段时间后重启，避免把积压的旧弹幕一条条当成新的来叫醒 agent
@@ -124,18 +135,37 @@ const TEMPLATE = new RegExp([
   '有一种关心',
 ].join('|'))
 
+// 昵称命中（2026-10-30 方案4）：
+//   ① 显式 @昵称 → 必中
+//   ② 文本里没有 @ 时 → 只对"长度 ≥4"的名字做包含匹配
+//      （实测历史弹幕 10 条 0 条带 @，主人要求「不强制要求文本里有 @ 号」；
+//        但"小明 / 小名 / 小Z"太短，无 @ 时包含匹配会误伤 → 这类名字只认显式 @）
+function mentioned(text) {
+  const t = String(text ?? '')
+  for (const n of SELF_NAMES) {
+    if (n && t.includes(`@${n}`)) return n
+  }
+  for (const n of SELF_NAMES) {
+    if (n && n.length >= 4 && t.includes(n)) return n
+  }
+  return ''
+}
+
 function decide(uid, text, cfg = {}) {
   const opUid = cfg.operatorUid ?? operatorUid
   const anUid = cfg.anchorUid ?? anchorUid
   const ignored = (cfg.ignoreUids ?? ignoreUids).includes(uid)
   if (ignored) return { hit: false, why: '', reason: '在 --ignore-uid 黑名单里', templated: false }
-  const mine = SELF_NAMES.some((n) => text.includes(`@${n}`))
+  const hitName = mentioned(text)
+  const mine = !!hitName
   const fromOperator = !!opUid && uid === opUid
   const fromAnchor = !!anUid && uid === anUid
   const templated = TEMPLATE.test(text)
   let why = ''
-  if (mine) why = '@了我'
-  else if (fromOperator) why = '来自 operator'
+  // 2026-10-30 主人定：operator（老大）无条件回 —— 优先级最高，高于 @我和模板过滤
+  //   （以前 mine 排在 operator 前面：老大发的模板句会被误标成"@了我"）
+  if (fromOperator) why = '来自 operator'
+  else if (mine) why = `@了我（${hitName}）`
   // 2026-10-12 主人要求：主播**非模板**的发言直接回（不再要求"像提问"）
   else if (fromAnchor && !templated) why = 'anchor 发言'
   const reason = why ? '' : (fromAnchor ? 'anchor 但属机器人模板句' : '非授权对象')
@@ -181,9 +211,16 @@ if (args.has('selftest')) {
     [O, '我要把她叫出来', true],
     [O, '主播，你好冷漠', true],
     [O, '哈哈哈', true],
+    // —— 2026-10-30：operator 优先级最高（哪怕这句本身是机器人模板句）——
+    [O, '点个关注行不行~', true],
+    [O, '欢迎大家来直播间~', true],
     // —— 陌生观众 / @我：不搭理 / 必回 ——
     [520300843, '就是就是', false],
     [123, '路过看看', false],
+    // —— 2026-10-30：@我 不强制要 @ 号（长名字走包含匹配；短名字仍只认显式 @）——
+    [123, '小小小名不是小明在吗', true],
+    [123, '@小Z 看这里', true],
+    [123, '小明同学好', false],
   ]
   let bad = 0
   for (const [uid, text, expect] of cases) {
@@ -245,7 +282,7 @@ const qs = Object.keys({ id: roomArg, type: 0, wts }).sort().map((k) => `${encod
 const dan = await jget(`https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?${qs}&w_rid=${crypto.createHash('md5').update(qs + mixin).digest('hex')}`)
 // 弹幕服务器列表只在 WebSocket 模式下需要（见下方 ws 分支）；轮询模式不连 ws
 
-log(`等待中（房间 ${roomArg}，最多 ${timeoutSec}s；只等 operator=${operatorUid} / anchor=${anchorUid} / @${SELF_NAMES.join(' 或 @')}）`)
+log(`等待中（房间 ${roomArg}，最多 ${timeoutSec}s；只等 operator=${operatorUid} / anchor=${anchorUid} / @${SELF_NAMES.join(' 或 @')}；长度≥4 的名字无 @ 也算命中）`)
 let frames = 0
 let dm = 0
 const enc = new TextEncoder()
