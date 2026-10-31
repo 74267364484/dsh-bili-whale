@@ -116,11 +116,14 @@ export async function fetchReplies(aid, headers, { mode = 'hot', next = 0, ps = 
   try {
     const r = await apiGet(`${API}/x/v2/reply/main?type=1&oid=${aid}&mode=${m}&next=${next}&ps=${ps}`, headers)
     if (r?.code !== 0) return { replies: [], cursor: null, code: r?.code }
+    const cur = r.data?.cursor ?? null
     return {
       replies: r.data?.replies ?? [],
       top: r.data?.top?.upper ? r.data.top : null,
-      cursor: r.data?.cursor ?? null,
-      allCount: Number(r.data?.cursor?.all_count ?? 0),
+      // ⚠️ 2026-10-31：cursor 是对象 {next, is_end, all_count}，直接传给 next= 会拼成 [object Object] ✗
+      //   → 这里把可用的 next 游标（数字）单独取出来；翻完了（is_end）就返回 null。
+      cursor: cur && cur.is_end === false && Number.isFinite(Number(cur.next)) ? Number(cur.next) : null,
+      allCount: Number(cur?.all_count ?? 0),
     }
   } catch { return { replies: [], cursor: null, code: -1 } }
 }

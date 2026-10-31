@@ -33,18 +33,26 @@ import { NODE_EXE } from '../lib/nodebin.mjs'   // 2026-10-21：别用 process.e
 
 const argv = process.argv.slice(2)
 const bvid = argv.find((a) => !a.startsWith('--'))
-if (!bvid) { console.error('用法: node debrief.mjs <BV> [--bucket 15] [--top 10] [--grid 5x5] [--no-frames] [--subs 400]'); process.exit(2) }
+if (!bvid) { console.error('用法: node debrief.mjs <BV> [--bucket 15] [--top 14] [--grid 5x5] [--no-frames] [--subs 0] [--comments 40] [--subroots 6] [--subreplies 12]'); process.exit(2) }
 const opt = {}
 for (let i = 0; i < argv.length; i += 1) {
   if (argv[i].startsWith('--')) opt[argv[i].slice(2)] = argv[i + 1]?.startsWith('--') ? true : argv[++i] ?? true
 }
 // 2026-10-26 主人要求「看视频多拿信息，不心疼预算」：默认值全面调高
 // 2026-10-28 再调：字幕终端行数上限 400（够读完一整集），评论条数 24（老接口只给 6 条 → 换新版接口）
+// 2026-10-31 再加码（主人原话「看视频逻辑获取的信息太少了」）：
+//   字幕默认**全打**（0 = 不截断）、热评 40、热区 TOP 14、二级评论 6 条主楼 × 12 条、
+//   最新评论不再截到 12、相关推荐 12 条、热门评论翻页再取一轮、全程高频弹幕 20 条。
+//   —— 视频情报越多，她才越可能写出"有具体细节"的评论，而不是泛泛夸。
 const BUCKET = Number(opt.bucket ?? 15)
-const TOP = Number(opt.top ?? 10)
+const TOP = Number(opt.top ?? 14)
 const GRID = String(opt.grid ?? '5x5')
-const NCOM = Number(opt.comments ?? 24)
-const SUBS_LIMIT = Number(opt.subs ?? 400)      // 终端最多打多少行字幕（0 = 全打）
+const NCOM = Number(opt.comments ?? 40)
+const SUBS_LIMIT = Number(opt.subs ?? 0)        // 终端最多打多少行字幕（0 = 全打）
+const SUBREPLIES = Number(opt.subreplies ?? 12)  // 每条主楼取几条二级评论
+const SUBROOTS = Number(opt.subroots ?? 6)       // 展开几条主楼的二级评论
+const FRESH = Number(opt.fresh ?? NCOM)          // 最新评论条数（不再截到 12）
+const HOT_PAGES = Number(opt.hotpages ?? 2)      // 热门评论翻几页
 const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`
 
 // ── 防提示注入（2026-10-17 加，Kimi 评审指出：只靠 prompt 层不够）──────────
@@ -232,7 +240,7 @@ if (!danmaku.length) {
   }
   const all = {}
   for (const x of danmaku) if (!isSpam(x.text) && x.text.length >= 2) all[x.text] = (all[x.text] ?? 0) + 1
-  const topAll = Object.entries(all).sort((a, b2) => b2[1] - a[1]).slice(0, 12)
+  const topAll = Object.entries(all).sort((a, b2) => b2[1] - a[1]).slice(0, 20)
   console.log(`\n全程高频弹幕（已剔刷屏）: ${topAll.map(([t, c]) => `${t}×${c}`).join(' | ')}`)
 }
 
@@ -242,28 +250,40 @@ if (!danmaku.length) {
 //   字段更全（含 IP 属地、是否 UP 主），还能带二级评论 —— 观众之间的对话往往比主楼更有信息量。
 console.log('\n══════════ ⑥ 评论（看完的人怎么看）══════════')
 {
+  // 2026-10-31：热门评论**翻页**（cursor），原来只取第一页 24 条 → 观众讨论被砍掉一大半 ✗
   const hot = await fetchReplies(aid, H, { mode: 'hot', ps: Math.max(10, NCOM) })
+  const hotList = [...hot.replies]
+  let cursor = hot.cursor
+  for (let p = 1; p < HOT_PAGES && cursor && hotList.length < NCOM * 2; p += 1) {
+    const more = await fetchReplies(aid, H, { mode: 'hot', next: cursor, ps: Math.max(10, NCOM) })
+    if (!more.replies?.length) break
+    hotList.push(...more.replies)
+    cursor = more.cursor
+  }
   const fresh = await fetchReplies(aid, H, { mode: 'new', ps: Math.max(10, NCOM) })
   console.log(`评论总数（接口标称）: ${hot.allCount || '?'}`)
   const showReplies = (label, list, limit) => {
     if (!list.length) { console.log(`\n--- ${label} ---（没取到）`); return [] }
-    console.log(`\n--- ${label}（${list.length} 条）---`)
+    console.log(`\n--- ${label}（${list.length} 条，打印前 ${Math.min(list.length, limit)} 条）---`)
     for (const r of list.slice(0, limit)) {
       const L = replyLine(r, d.owner.mid)
       console.log(`  👍${String(L.like).padStart(5)}  回复${String(L.rcount).padStart(3)}  ${L.uname}${L.up ? '（UP）' : ''}${L.loc ? '·' + L.loc : ''}${L.time ? '·' + L.time : ''}: ${L.msg}`)
     }
     return list.slice(0, limit)
   }
-  const hotShown = showReplies('热门评论', hot.replies, NCOM)
-  showReplies('最新评论', fresh.replies, Math.min(NCOM, 12))
+  const hotShown = showReplies('热门评论', hotList, NCOM)
+  showReplies('最新评论', fresh.replies, FRESH)
 
-  // 二级评论：只对讨论最热的前 3 条主楼展开（否则输出爆炸）
-  const juicy = hotShown.filter(r => Number(r.rcount ?? 0) > 0).slice(0, 3)
+  // 二级评论：讨论最热的前 SUBROOTS 条主楼，每条取 SUBREPLIES 条
+  //   （观众之间的对话往往比主楼更有信息量 —— 2026-10-31 从「3×8」放宽到「6×12」）
+  const juicy = hotShown.filter(r => Number(r.rcount ?? 0) > 0)
+    .sort((a, b) => Number(b.rcount ?? 0) - Number(a.rcount ?? 0))
+    .slice(0, SUBROOTS)
   if (juicy.length) {
     console.log('\n--- 二级评论（讨论最热的几条主楼下）---')
     for (const r of juicy) {
       const L = replyLine(r, d.owner.mid)
-      const sub = await fetchSubReplies(aid, L.rpid, H, { ps: 8 })
+      const sub = await fetchSubReplies(aid, L.rpid, H, { ps: SUBREPLIES })
       console.log(`  ▸ 主楼 ${L.uname}: ${L.msg}（${L.rcount} 条回复）`)
       for (const s of sub.replies) {
         const S = replyLine(s, d.owner.mid)
@@ -287,7 +307,7 @@ if (detail) {
   }
   if (detail.related?.length) {
     console.log('\n相关推荐（B站 说的"看这个的人还看了"）:')
-    for (const r of detail.related.slice(0, 8)) {
+    for (const r of detail.related.slice(0, 12)) {
       console.log(`  ${r.bvid}  ${String(r.title).slice(0, 46)}  ｜ ${r.up} ｜ ${fmt(r.dur)} ｜ 播放${(r.view / 10000).toFixed(1)}万 赞${r.likes}`)
     }
   }
