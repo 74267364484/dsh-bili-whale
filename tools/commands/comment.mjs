@@ -20,7 +20,10 @@ import { execFileSync } from '../lib/capture.mjs'
 import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
 import { validateShare } from '../lib/share-policy.mjs'
+import { apiGet } from '../lib/bili-api.mjs'
 import { NODE_EXE } from '../lib/nodebin.mjs'   // 2026-10-21：别用 process.execPath（Electron 里它是主程序 ✗）
+
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
 // ── 限额闸（B 档「限额自主」的代码强制部分，2026-10-14 主人选 B 档）────────────────
 // 语义：闸门**只管自主发言**（带 --auto，即"她自己决定说的"）；主人当场授权的发言不拦 ✓
@@ -71,7 +74,7 @@ for (let i = 2; i < process.argv.length; i += 1) {
   const a = process.argv[i]
   if (a.startsWith('--')) args.set(a.slice(2), process.argv[i + 1]?.startsWith('--') ? true : process.argv[++i] ?? true)
 }
-const oid = args.get('oid')
+let oid = args.get('oid')
 const bvid = args.get('bvid')
 let message = args.get('message')
 let root = args.get('root')     // 线程根评论 rpid（二级回复用）
@@ -96,8 +99,29 @@ const go = args.get('go') === true || args.has('go')
 //   动机：她撞过几次 fail-closed 之后就开始凭记忆说「又被拒了」✗
 //        给她一条零副作用的检查命令 ✓ 让她自己看到「现在是通的」✓
 const CHECK = args.get('check') === true || args.has('check')
+
+// 2026-10-31：只给 --bvid 也行 —— 自动反查 aid（oid）。
+//   动机（"还是没艾特我"的根因之一）：唤醒提示里给的命令**没带 --oid**，
+//   而 usage 强制要 --oid → agent 照抄必然撞 usage 报错 → 她退回去用裸
+//   `--oid + --bvid + --message` → 把 --share/--auto 全丢了 → 正文里就没有 @ 主人 ✗
+//   现在：--bvid 单独给就能发 ✓（不需要先跑 recon 拿 aid）
+async function resolveOidFromBvid(bv) {
+  try {
+    const r = await apiGet(`https://api.bilibili.com/x/web-interface/view?bvid=${bv}`, {
+      'user-agent': UA, referer: `https://www.bilibili.com/video/${bv}/`,
+    })
+    if (r?.code === 0 && r?.data?.aid) return String(r.data.aid)
+  } catch {}
+  return ''
+}
+if (!oid && bvid) {
+  oid = await resolveOidFromBvid(bvid)
+  if (oid) console.log(`[自动反查] ${bvid} → oid=${oid} ✓（不用先跑 recon 拿 aid 了）`)
+  else console.error(`[自动反查] ${bvid} 拿不到 aid —— 请显式给 --oid <aid>，或先跑 \`bili recon ${bvid}\``)
+}
+
 if (CHECK) {
-  if (!oid) { console.error('--check 需要 --oid'); process.exit(2) }
+  if (!oid) { console.error('--check 需要 --oid（或给 --bvid，脚本会自动反查 aid）'); process.exit(2) }
   const who = (root && parent) ? await parentAuthor(oid, root, parent, type) : null
   const ownerMid = String(config().owner?.mid ?? '')
   const lines = [
@@ -129,8 +153,9 @@ if (CHECK) {
   console.log(lines.join('\n')); process.exit(0)
 }
 
-if (!oid || (!bvid && !refererArg) || !message) {
-  console.error('usage: --oid <aid|comment_id_str> [--bvid <BV...> | --referer <url>] --message "<text>" [--type 1|11|17] [--root <rpid> --parent <rpid>] [--dry | --go] [--check]')
+if ((!oid && !bvid) || (!bvid && !refererArg) || !message) {
+  console.error('usage: --bvid <BV> --message "<text>" [--oid <aid>] [--type 1|11|17] [--root <rpid> --parent <rpid>] [--dry | --go] [--check]')
+  console.error('  说明：--oid 可以不给 —— 只给 --bvid 时脚本会自动反查 aid（不用先跑 recon）✓')
   process.exit(2)
 }
 if (dry && go) { console.error('pick either --dry or --go, not both'); process.exit(2) }
@@ -151,18 +176,24 @@ if (SHARE) {
   if (!AUTO) { console.error('--share 必须与 --auto 同传（分享型也是"她自己决定说的"）'); process.exit(2) }
   try { validateShare(config(), { reason: args.get('reason'), score: args.get('score'), rank: args.get('rank') ?? 1 }) }
   catch (e) { console.error(e.message); process.exit(2) }
+}
 
-  // 2026-10-30 主人定：**分享型必须 @ 到主人** ✓（恢复 10-28 之前的自动补 @）
-  //   动机：主人在评论区看到「没有 @ 我」→ 以为机器人没艾特他 ✗
-  //   做法：正文里没有 @<owner.name> 时，自动在**开头**补上（改 message 变量，
-  //         真正发出去的正文就带 @ ✓ —— params 在后面才构造）
+// 2026-10-31：**所有顶层对外评论一律 @ 主人** ✓
+//   动机（主人原话「还是没艾特我」）：补 @ 的逻辑原来被关在 `if (SHARE)` 分支里，
+//   而她长期只发裸 `--oid --bvid --message`（不带 --share）→ 补 @ 永远不执行 →
+//   主人看不到 @ ✗。现在提到分支外：自主发言（--auto）/ 分享型（--share）/
+//   主人授权（无旗标）三条路，只要是对外发的一条顶层评论，正文开头都带 @ 主人 ✓
+//   规则：正文里没有 @<owner.name> 时，自动在开头补上（改的是 message 变量，
+//         真正发出去的正文就带 @ ✓ —— params 在后面才构造）
+//   例外：二级回复（--root/--parent，回复某个网友）不自动 @ 主人 —— 那是回别人，别乱 @。
+if (!root && !parent) {
   const ow = config().owner ?? {}
   const body = String(message ?? '').trimStart()
   if (ow.name && !body.includes(`@${ow.name}`)) {
     message = `@${ow.name} ${body}`.trim()
-    console.log(`[分享型] 正文没有 @ 主人 → 自动补上「@${ow.name}」✓（这才是主人要的）`)
-  } else {
-    console.log(`[分享型] 正文已 @ 主人「${ow.name}」✓ 原样发送`)
+    console.log(`[自动 @] 正文没有 @ 主人 → 补上「@${ow.name}」✓（主人要看得到自己被 @）`)
+  } else if (ow.name) {
+    console.log(`[自动 @] 正文已 @ 主人「${ow.name}」✓ 原样发送`)
   }
 }
 
@@ -246,7 +277,6 @@ if (!cred.buvid3 || String(cred.buvid3).trim() === '') {
   console.error('⚠️ 没有 buvid3（不影响评论；个别接口可能被风控）—— 想补就在 F12 → Cookies 里复制 buvid3')
 }
 const cookieHeader = `SESSDATA=${cred.sessdata}; bili_jct=${cred.bili_jct}; buvid3=${cred.buvid3}`
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 const referer = refererArg !== '' ? refererArg : `https://www.bilibili.com/video/${bvid}/`
 
 // ---- WBI signing (harmless if the endpoint does not ask for it) -------------
