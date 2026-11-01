@@ -62,7 +62,20 @@ const saveFeedback = (f) => { fs.mkdirSync(path.dirname(FEEDBACK), { recursive: 
 function silence() {
   const fb = loadFeedback()
   fb.last = latestFeedback(fb.last, config().owner?.mid)
-  const base = fb.last ?? (q.log.find((x) => x.share)?.at ?? null)   // 没反馈过 → 从第一次分享算
+  // ⚠️ 2026-10-31 修（主人原话「她根本不活跃」）：没反馈过时，参考点原本取**最早**那条 share 记录
+  //   （`q.log.find(x=>x.share)`）→ 沉默天数只会从"她这辈子第一次发"开始涨，
+  //   哪怕她天天在发也照样涨 → 到 14 天必然进 quiet 档、30 天进 faint 档 → 她自己就不发了 ✗
+  //   正确做法：取**最近一次**分享的时间当参考点 ✓
+  const lastShareAt = (() => {
+    let best = null
+    for (const x of q.log ?? []) {
+      if (!x?.share || !x.at) continue
+      const t = new Date(x.at).getTime()
+      if (Number.isFinite(t) && (best === null || t > best)) best = t
+    }
+    return best === null ? null : new Date(best).toISOString()
+  })()
+  const base = fb.last ?? lastShareAt   // 没反馈过 → 从**最近一次**分享算
   const days = base ? Math.floor((Date.now() - new Date(base).getTime()) / 86_400_000) : 0
   const after = Number(config().share?.silentAfterDays ?? 3)     // 3 天开始衰减
   const stopAt = Math.max(after + 1, Number(config().share?.silentStopDays ?? 7))  // 7 天完全停

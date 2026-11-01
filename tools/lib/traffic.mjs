@@ -36,7 +36,17 @@ export function createTrafficGuard({ directory, transport = (...a) => globalThis
   const stateFile = path.join(directory, 'traffic-state.json'), lockFile = stateFile + '.lock'
   function read() {
     try { const s = JSON.parse(fs.readFileSync(stateFile, 'utf8')); if (!s || typeof s !== 'object') throw Error('invalid state'); return s }
-    catch (e) { if (e.code === 'ENOENT') return {}; throw new TrafficError('请求保护状态损坏，请检查 traffic-state.json；已停止网络请求') }
+    catch (e) {
+      if (e.code === 'ENOENT') return {}
+      // 2026-11-01：断电/崩溃会把状态文件落成全 NUL（NTFS 分配了簇但数据没刷盘）。
+      //   实测那次整条鱼从 10-31 22:40 起静默停摆 11 小时（假"保护暂停"）。
+      //   主文件读不出来时用最后一份好状态 .bak 自愈，别再整块停摆。
+      try {
+        const b = JSON.parse(fs.readFileSync(stateFile + '.bak', 'utf8'))
+        if (b && typeof b === 'object' && !Array.isArray(b)) return b
+      } catch {}
+      throw new TrafficError('请求保护状态损坏，请检查 traffic-state.json；已停止网络请求')
+    }
   }
   async function locked(fn) {
     fs.mkdirSync(directory, { recursive: true })
@@ -61,7 +71,12 @@ export function createTrafficGuard({ directory, transport = (...a) => globalThis
     try {
       const s = read(), result = fn(s)
       const temp = stateFile + '.' + process.pid + '.tmp'
-      try { fs.writeFileSync(temp, JSON.stringify(s)); fs.renameSync(temp, stateFile) }
+      try {
+        fs.writeFileSync(temp, JSON.stringify(s))
+        // 留一份最后的好状态：断电把主文件写成全 NUL 时靠它自愈（见 read()）
+        try { fs.writeFileSync(stateFile + '.bak', JSON.stringify(s)) } catch {}
+        fs.renameSync(temp, stateFile)
+      }
       finally { fs.rmSync(temp, { force: true }) }
       return result
     } finally { fs.closeSync(fd); fs.unlinkSync(lockFile) }
