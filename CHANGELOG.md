@@ -1,5 +1,38 @@
 ## 0.4.6（2026-10-24）
 
+### 0.4.6 补充（2026-11-01）：不再凭空铸造会话（修「一堆会话」）
+
+#### 病根：DSH 的 `session/create` 对「已经有回合的会话」会退化成 `createMinted`
+
+`ApiSessionAgentController.claim()` 的两条分支在"会话已有回合"时都会走
+`createMinted(cwd, composition)` → `createAgent('session-' + randomUUID(), ...)`
+→ **凭空生成一个 `session-<uuid>` 空占位会话**。插件的 `cwd` 和常驻会话一致，
+这个占位会话就被 `WorkspaceRegistry.candidateMatches` 归进同一个工作区 → 界面上多出一条。
+
+插件每重启一次后的首投都会命中（`ready` 初始为 false → 先 `create()` 再 `prompt()`），
+所以**每重启一次漏一个会话**，长期累积成"一堆会话"。
+
+#### 修法：已有会话就不 `create`
+
+`prompt` 链路本来就会自动恢复会话：
+
+```
+SessionController.prompt → SessionCommandController.prompt
+  → resolveAgent(sessionId) → ApiSessionAgentController.resolve
+  → resume(sessionId) → ctx.agents.resume({ resumeSessionId })
+```
+
+所以 `create()` 只有在**磁盘上真的没有这个会话**时才需要。现在 `lib/session-delivery.js`
+先查 `~/.dsh/sessions/*/<sessionId>` 是否存在，存在就直接 `prompt()`，断掉铸造路径。
+
+（`sessionRotateDays: 0` 时插件自己不轮换会话；轮换分支用新 uuid，走的是
+"会话不存在 → `createAgent(精确 id)`" 路径，同样不会铸造。）
+
+#### 验证
+
+重启 DSH 后走「开机必醒」投递一轮：常驻会话 `lastTurn` 22 → 23，
+`~/.dsh/sessions` 总数与投影缓存数均**未增加**，工作区下仍只有 `小Z · 常驻会话` 一条。
+
 ### 0.4.6 补充（2026-10-30）：直播间过滤层修好 + 分享型恢复 @ 主人
 
 #### 修：直播间"只回主人"其实从来没生效（配置 `liveScope: "all"` 是非法值）
