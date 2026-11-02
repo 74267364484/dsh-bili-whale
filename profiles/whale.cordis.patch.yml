@@ -1,0 +1,273 @@
+# ============================================================================
+# dsh-bili-whale —— whale profile 用户补丁（profile 层）
+# ============================================================================
+#
+# 这是**profile 层**补丁，落在 `~/.dsh/profiles/<profile>/cordis.patch.yml`。
+# 和仓库根目录的 `cordis.patch.yml`（bundle 层，只负责把本插件插进配置树）是两个文件：
+#   · bundle 层  -> dsh 启动时装配插件本身
+#   · profile 层 -> 装好后**这台机器上的 agent**怎么跑（模型 / 图片预算 / 压缩策略 / 权限）
+#
+# 安装：把本文件放到 `~/.dsh/profiles/<profile>/cordis.patch.yml`
+#       （`dsh --profile <profile> --dump-config` 可以确认是否被吃到）
+#
+# ⚠️ 里面的 `preset-standard` 是**整行覆盖** dsh-web-app 随包发布的 preset：
+#    profile patch 的 buildMap 不会下钻进 preset 的 `config.plugins`，
+#    所以只能整行替换（Web 编辑器保存也是这么做的）。升级 dsh-web-app 后需重新比对。
+# ============================================================================
+
+# 小Z · whale profile 用户补丁（2026-10-26 安装）
+# 默认模型：NVIDIA API（integrate.api.nvidia.com）的 z-ai/glm-5.3-flash
+# 密钥从 ~/.dsh/.credentials.yaml 的 NV_API_KEY 读取，不落在这里。
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: nv
+    model: z-ai/glm-5.3-flash
+
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      nv:
+        apiKeyEnv: NV_API_KEY
+        api: openai-completions
+        baseURL: https://integrate.api.nvidia.com/v1
+        # glm-5.3-flash 首包偶尔 9–10 分钟，默认 5 分钟会触发重试/放大延迟
+        streamIdleTimeoutMs: 600000
+        # ── 图片预算（2026-11-02 清理）──────────────────────────────────
+        # 事实：10-26 那 9 张老图早在 11-01 就被 dsh-base 的
+        # compaction-image-offload 永久淘汰了（3 条 image/offload 事件，
+        # 淘汰后不会自动回归）。真正的开销来自 11-01 剩下的 4 张图：
+        # kept base64 合计 2393KiB，每一步都原样带进请求体。
+        # 三个键配合使用：
+        #   requestImagePixelBudget  单图像素上限（2560×2560，5x5 拼图每格 512px，看得清字幕）
+        #   requestImageMaxBytes     单图编码字节目标（512KiB，base64 约 683KiB）
+        #   maxRequestImageBytes     整请求 base64 图片载荷上限（2MiB）
+        #     超限 → pi-ai 抛 IMAGE_OFFLOAD_REQUIRED
+        #     → dsh-base 已挂载的 compaction-image-offload 永久淘汰最老图片并重试
+        #       （不消耗 provider 重试预算）→ 常驻会话自带图片自限能力 ✓
+        # 2MiB ÷ 683KiB ≈ 只保留最近 2 张画面，其余老图自动永久淘汰。
+        requestImagePixelBudget: 6291456 # 2560×2560
+        requestImageMaxBytes: 524288 # 单图 512KiB
+        maxRequestImageBytes: 2097152 # 整请求图片载荷 2MiB
+        # 主人定的规矩：连接失败就等 5 秒重试，连续 100 次仍失败才终止
+        # mode normal + 恒定 5s 退避（jitterRatio 0）= 精确的「5 秒一次，最多 100 次」
+        # retryableCodes 用默认全量：EMPTY_RESPONSE/RATE_LIMIT/SERVER/TIMEOUT/TRANSPORT
+        # + PI_AI_ERROR：NVIDIA 回的 "Internal server error" 不含数字，
+        #   classifyPiAiError 兜底归类到 PI_AI_ERROR，不加它就一次都不重试。
+        retryPolicy:
+          mode: normal
+          maxRetries: 100
+          retryableCodes:
+            - EMPTY_RESPONSE
+            - RATE_LIMIT
+            - SERVER
+            - TIMEOUT
+            - TRANSPORT
+            - PI_AI_ERROR
+          backoff:
+            initialDelayMs: 5000
+            maxDelayMs: 5000
+            jitterRatio: 0
+        # ── 上下文窗口（2026-11-02 清理）────────────────────────────────
+        # contextWindow 保持 1000000：它同时被 pi-ai 的 isContextOverflow 用作
+        # 「input+cacheRead 超过窗口」判溢出的门限，调小会让每一步都误报
+        # CONTEXT_WINDOW_EXCEEDED（当前真实 input 已 371K）。
+        # 压缩触发改由下面的 compaction-basic 策略控制（thresholdRatio）。
+        # maxTokens 从 384000 降到 32768：
+        #   ① 它是发给 provider 的 max_tokens，384000 荒谬；
+        #   ② compaction 的 reservedCompletionTokens 直接取 requestHeader.config.maxTokens，
+        #      384000 会吃掉 38% 的上下文预算。
+        models:
+          - id: z-ai/glm-5.3-flash
+            name: z-ai/glm-5.3-flash
+            input:
+              - text
+              - image
+            contextWindow: 1000000
+            maxTokens: 32768
+          - id: z-ai/glm-5.3
+            name: z-ai/glm-5.3
+            input:
+              - text
+              - image
+            contextWindow: 1000000
+            maxTokens: 32768
+
+# ── 压缩策略（2026-11-02 清理）────────────────────────────────────
+# 问题：常驻会话 surface 只增不减，从 0 涨到 169854 token，
+# 每一步 uncached input 371K 且 prompt cache 几乎全不命中。
+# 根因：compaction-basic 默认 thresholdRatio=.8 →
+#   threshold = min(cw*0.8, cw-reserved-headroom) = min(800000, 1000000-32768-65536)
+#   = 550464，而实测 pressureTokens 只有 372464 → 永远够不到阈值 → 压缩永不触发。
+# 现在把阈值压到 250K：
+#   messageBudget = 1000000-32768 = 967232
+#   threshold = min(1000000*0.25, 967232-65536) = 250000
+#   retain    = floor(967232*0.08) = 77378 < 250000 ✓
+# 效果：压力到 250K 就自动压缩，保留最近约 7.7 万 token 尾部，
+# 老 tool/result（含老图片引用）被 compaction/prune 折叠掉 → 请求体变小、缓存可命中。
+#
+# 关键：真正生效的 compaction-basic 在 preset 平面（dsh-web-app 的
+# presets/standard.patch.yml 里 preset-standard 的 plugins 列表内层），
+# 而宿主平面的同名行被 dsh-web-app 设了 disabled: true。
+# profile patch 的 buildMap 不会下钻进 preset 的 config.plugins，
+# 所以只能整行覆盖 preset-standard（这正是 Web 编辑器保存时的做法：
+# "A user override replaces the complete child list"）。
+# 下面这份 plugins 列表是 dsh-web-app 随包发布的原版逐字拷贝，
+# 只在 compaction-basic 上加了 config；升级 dsh-web-app 后需重新比对。
+
+# 小Z 需要完全访问：跑 bili 工具、读写 ~/.bili-ai、发评论/弹幕，且无人值守
+- id: permission
+  name: "@deepseek-ai/dsh-permission-presets"
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+    defaultPreset: danger-full-access
+
+- id: sandbox-policy
+  name: "@deepseek-ai/dsh-sandbox-policy"
+  config:
+    mode: danger-full-access
+- id: ui-settings-general
+  name: "@deepseek-ai/dsh-client-ui-settings-general"
+  config:
+    welcomeNoticeVersion: 2026-09-28.1
+
+# ── preset-standard 覆盖：让压缩阈值真正生效（2026-11-02 清理）──────────
+- id: preset-standard
+  name: '@deepseek-ai/dsh-agent-preset'
+  config:
+    id: standard
+    order: 1
+    plugins:
+      - id: persona
+        name: '@deepseek-ai/dsh-persona'
+        config:
+          prefix: You are a coding agent powered by the {{model}} model.
+      - id: agent-instructions
+        name: '@deepseek-ai/dsh-agent-instructions'
+        config:
+          maxBytes: 65536
+      - id: time-context
+        name: '@deepseek-ai/dsh-time-context'
+      - id: tool-bash
+        name: '@deepseek-ai/dsh-tool-bash'
+        disabled: !!js process.platform === 'win32'
+      - id: tool-pwsh
+        name: '@deepseek-ai/dsh-tool-pwsh'
+        disabled: !!js process.platform !== 'win32'
+      - id: tool-fs
+        name: '@deepseek-ai/dsh-tool-fs'
+      - id: tool-fs-search
+        name: '@deepseek-ai/dsh-tool-fs-search'
+        config:
+          sampleOverCapGlobResults: false
+      - id: tool-jobs
+        name: '@deepseek-ai/dsh-tool-jobs'
+      - id: tool-schedule
+        name: '@deepseek-ai/dsh-tool-schedule'
+      - id: skill-filesystem
+        name: '@deepseek-ai/dsh-skill-filesystem'
+      - id: tool-skill
+        name: '@deepseek-ai/dsh-tool-skill'
+      - id: command-goal
+        name: '@deepseek-ai/dsh-command-goal'
+      - id: tool-goal
+        name: '@deepseek-ai/dsh-tool-goal'
+      - id: planning
+        name: cordis:group
+        group: true
+        isolate:
+          planMode: true
+        config:
+          - id: plan-mode
+            name: '@deepseek-ai/dsh-plan-mode'
+            config:
+              section: |
+                You are in plan mode. Stay in plan mode until the user approves your plan through exit_plan_mode or switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+                Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+                The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+                Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+                Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+                When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+      - id: compaction
+        name: cordis:group
+        group: true
+        isolate:
+          compaction: true
+          toolResultPruner: true
+        config:
+          - id: compaction-basic
+            name: '@deepseek-ai/dsh-compaction-basic'
+            config:
+              thresholdRatio: 0.25
+              retainRatio: 0.08
+              maxTokens: 16384
+              compactionRetries: 2
+          - id: command-compact
+            name: '@deepseek-ai/dsh-command-compact'
+          - id: tool-result-pruner
+            name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+            config:
+              thresholdChars: 8192
+              headChars: 4096
+              tailChars: 1024
+      - id: delegation
+        name: cordis:group
+        group: true
+        isolate:
+          workflowEngine: true
+        config:
+          - id: tool-subagent-control
+            name: '@deepseek-ai/dsh-tool-subagent-control'
+          - id: tool-subagent-list-agents
+            name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+          - id: tool-subagent
+            name: '@deepseek-ai/dsh-tool-subagent'
+            config:
+              provider: spawn
+              toolName: subagent
+              modelSelectionSettings: true
+          - id: tool-subagent-fork
+            name: '@deepseek-ai/dsh-tool-subagent'
+            config:
+              provider: fork
+              toolName: subagent_fork
+          - id: workflow-ptc
+            name: '@deepseek-ai/dsh-workflow-ptc'
+            config:
+              provider: spawn
+          - id: tool-workflow
+            name: '@deepseek-ai/dsh-tool-workflow'
+      - id: tool-ask-user
+        name: '@deepseek-ai/dsh-tool-ask-user'
+      - id: tool-todo
+        name: '@deepseek-ai/dsh-tool-todo'
+        config:
+          allowParallelInProgress: true
+      - id: tool-web
+        name: '@deepseek-ai/dsh-tool-web'
+        config:
+          fetch: true
+          searchTimeoutMs: 60000
+      - id: present
+        name: '@deepseek-ai/dsh-tool-present'
+      - id: tool-plugin-manager
+        name: '@deepseek-ai/dsh-plugin-manager/tools'
+        disabled: true
+      - id: tool-plugin-market
+        name: '@deepseek-ai/dsh-plugin-market/tools'
+        disabled: true
