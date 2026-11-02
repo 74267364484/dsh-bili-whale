@@ -1,5 +1,86 @@
 ## 0.4.6（2026-10-24）
 
+### 0.4.6 补充（2026-11-02）：常驻会话瘦身 —— 压缩阈值真正生效 + 图片预算收紧
+
+#### 病根：压缩永远不触发，`thresholdRatio` 改在了没被加载的那一行
+
+常驻会话 `bili-whale` 的 surface 只增不减，从 0 涨到 **372464 token**，
+每一步 uncached input 都得从 provider 重新读一遍 371K，prompt cache 基本全不命中。
+
+查下去发现三件事叠在一起：
+
+1. **默认阈值够不到。** `compaction-basic` 的默认 `thresholdRatio = 0.8`，
+   配合 `contextWindow = 1000000` / `maxTokens = 384000` / `headroom = 65536`：
+   `threshold = min(1000000×0.8, 1000000-384000-65536) = 550464`。
+   实测 pressureTokens 只有 372464 → **永远够不到阈值 → 压缩永不触发**。
+
+2. **改错了平面。** `dsh-web-app` 在它的 `cordis.patch.yml`（第 539–545 行）里把
+   **宿主平面**的 `compaction-basic` / `command-compact` 设成了 `disabled: true`
+   （注释写明「token METER 留在宿主平面，只有读它的压缩后端搬走」）。
+   真正在跑的是 `presets/standard.patch.yml` 里 `preset-standard` 的 `compaction` group
+   **内层**那个同名行 —— 而 profile patch 的 `buildMap` 不会下钻进 preset 的
+   `config.plugins`，**按 id 打不中，只能整行覆盖 `preset-standard`**。
+   （这正是 Web 编辑器保存时的做法：preset-registry README 第 99 行
+   "A user override **replaces the complete child list**"。）
+
+3. **`maxTokens = 384000` 是荒谬的。** 它是发给 provider 的 `max_tokens`；
+   而 `compaction` 的 `reservedCompletionTokens` 直接取
+   `requestHeader().config.maxTokens` → 384000 白吃掉 38% 的上下文预算。
+
+#### 改法
+
+见新增的 [`profiles/whale.cordis.patch.yml`](profiles/whale.cordis.patch.yml)
+（**profile 层**，和仓库根目录那个 bundle 层的 `cordis.patch.yml` 是两个文件）：
+后者只负责把插件插进配置树，前者管「装好后这台机器上的 agent 怎么跑」。
+
+| 键 | 旧 | 新 | 说明 |
+|---|---|---|---|
+| `models[].maxTokens` | 384000 | **32768** | provider 的 `max_tokens`；同时把 `reservedCompletionTokens` 拉回合理值 |
+| `compaction-basic.thresholdRatio` | 0.8 | **0.25** | `threshold = min(1000000×0.25, 967232-65536) = 250000` |
+| `compaction-basic.retainRatio` | 0.8 | **0.08** | `retain = floor(967232×0.08) = 77378 < 250000` ✓ |
+| `compaction-basic.maxTokens` | — | **16384** | 摘要那一跳的输出上限 |
+| `requestImagePixelBudget` | — | **6291456** | 单图 2560×2560（5×5 拼图每格 512px，字幕看得清） |
+| `requestImageMaxBytes` | — | **524288** | 单图编码 512KiB（base64 约 683KiB） |
+| `maxRequestImageBytes` | — | **2097152** | 整请求图片载荷 2MiB → 超限 pi-ai 抛 `IMAGE_OFFLOAD_REQUIRED`，`compaction-image-offload` 永久淘汰最老图片后重试（不消耗 provider 重试预算） |
+
+> `contextWindow` **保持 1000000 不能调小**：它同时被 pi-ai 的 `isContextOverflow`
+> 当作「input+cacheRead 超过窗口」的判溢出门限，调小会让每一步都误报
+> `CONTEXT_WINDOW_EXCEEDED`（当时真实 input 已经 371K）。
+
+`preset-standard` 的覆盖块是**从 dsh-web-app 随包发布的 `presets/standard.patch.yml`
+逐字生成**的（脚本化生成，不手抄 128 行，避免 `!!js` 表达式和 plan-mode 长文本抄错）。
+升级 dsh-web-app 后需要重新比对。
+
+#### 实测（2026-11-02 手动提前一次唤醒验证）
+
+```
+compaction/prune  × 6      老 tool/result 被折叠（shadowedTokenCount 合计 24K）
+compaction/start   15:26:52
+compaction/summary 15:32:56   ← LLM 摘要（NVIDIA 一跳要 6 分钟）
+compaction/end     15:32:56
+compaction/start   15:37:59   ← 第二轮，NVIDIA 回 504
+compaction/end     15:37:59   error: 504 status code (no body)
+```
+
+结果：
+
+```
+之前  inputTokens = 372464
+之后  inputTokens = 130906      ↓ 65%
+```
+
+第二轮压缩撞上 NVIDIA 504 失败了，但**第一轮已经把 surface 压到阈值以下**
+（250000 < 372464 → 130906），所以不影响这一轮的正确性；
+`compactionRetries: 2` 也留了余量。
+
+#### 顺带修的坑：状态文件被 BOM 写坏
+
+用 PowerShell 的 `Set-Content -Encoding UTF8` 改 `whale-night.json` 会写入 **BOM**，
+`JSON.parse` 直接失败 → 插件读不到状态 → 睡眠历史被清空、唤醒时间被重排
+（明明设了 15:25 醒，插件自己重排成了 17:25）。
+改这类 JSON 状态文件一律走 node（`fs.writeFileSync(..., 'utf8')`），
+或者用 `System.IO.File::WriteAllText(path, text, [UTF8Encoding]::new($false))`。
+
 ### 0.4.6 补充（2026-11-01）：不再凭空铸造会话（修「一堆会话」）
 
 #### 病根：DSH 的 `session/create` 对「已经有回合的会话」会退化成 `createMinted`
