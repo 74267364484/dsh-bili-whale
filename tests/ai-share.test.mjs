@@ -62,7 +62,7 @@ test('actual comment CLI blocks high AI share before quota or network; dry never
  writeAI(bv,'notice',{at:0})
  process.env.TEST_ALERT_LOG=path.join(home,'alerts')
  fs.writeFileSync(process.env.BILI_WHALE_CONFIG,JSON.stringify({owner:{name:'Owner',mid:'222'},share:{enabled:true,via:'comment',aiCommentGuard:true},notify:{type:'command',cmd:process.execPath,args:[path.join(root,'tests/helpers/ai-notify.mjs')]}}))
- const args=['--oid','42','--bvid',bv,'--message','hello','--share','--auto','--reason','这个视频值得认真分享给你','--score','15','--rank','1']
+ const args=['--oid','42','--bvid',bv,'--message','这个转场卡点挺讲究的(:з」∠)','--share','--auto','--reason','这个视频值得认真分享给你','--score','15','--rank','1']
  for(const mode of ['--dry','--go','--go']) {
   const r=run('comment',[...args,mode]);assert.equal(r.status,3,r.stdout+r.stderr);assert.match(r.stderr,/暂缓分享/)
   if(mode==='--dry')assert.equal(fs.existsSync(process.env.TEST_ALERT_LOG),false)

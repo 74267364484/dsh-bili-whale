@@ -138,7 +138,10 @@ test('slow requests have only one active API request across guard instances',asy
 test('every backend fetch caller imports the traffic wrapper',()=>{
  const root=fileURLToPath(new URL('../',import.meta.url))
  for(const p of fs.readdirSync(path.join(root,'tools'),{recursive:true}).filter(p=>p.endsWith('.mjs'))) {
-  if(p.replaceAll('\\','/')==='lib/traffic.mjs')continue
+  const rel=p.replaceAll('\\','/')
+  // traffic.mjs 自己是护栏实现；nv-client.mjs 是 NVIDIA LLM 直连（自家 100 次 / 5 秒重试），
+  // 不是 B 站后端流量，套上 B 站限速只会拖慢她 → 两者豁免
+  if(rel==='lib/traffic.mjs'||rel==='lib/nv-client.mjs')continue
   const src=fs.readFileSync(path.join(root,'tools',p),'utf8')
   if(/\bfetch\(/.test(src))assert.match(src,/guardedFetch as fetch/,p)
  }

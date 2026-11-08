@@ -27,7 +27,7 @@ test('ordinary owner DM does not require sharing score',t=>{const env=sandbox(t,
 test('comment uses the same score rule',t=>{const env=sandbox(t);const r=run(env,'tools/commands/comment.mjs',['--oid','1','--bvid','BV1234567890','--message','hello','--share','--auto','--go']);assert.notEqual(r.status,0);assert.equal(requests(env),'')})
 
 test('issue 39 actual comment CLI: invalid dynamic target blocks go and dry; valid dry never posts',t=>{
- const env=sandbox(t),args=['--oid','1262823889456594949','--type','17','--referer','https://www.bilibili.com/opus/1262823889456594949','--message','hello']
+ const env=sandbox(t),args=['--oid','1262823889456594949','--type','17','--referer','https://www.bilibili.com/opus/1262823889456594949','--message','这段字幕把笑声剪进鼓点里(:з」∠)']
  env.TEST_TARGET_CODE='-404'
  for(const mode of ['--go','--dry']){const r=run(env,'tools/commands/comment.mjs',[...args,mode]);assert.equal(r.status,6,r.stdout+r.stderr);assert.match(r.stderr,/目标不存在/)}
  env.TEST_TARGET_CODE='0';const r=run(env,'tools/commands/comment.mjs',[...args,'--dry']);assert.equal(r.status,0,r.stdout+r.stderr)

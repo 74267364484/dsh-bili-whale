@@ -16,7 +16,7 @@ function sandbox(t,cfg={}){
  const env={...process.env,USERPROFILE:home,HOME:home,DSH_HOME:dsh,DSH_NODE:process.execPath,BILI_WHALE_CONFIG:path.join(dsh,'bili-whale.config.json'),TEST_REQUESTS:path.join(home,'requests'),NODE_OPTIONS:'--import='+pathToFileURL(path.join(root,'tests/helpers/supplement-fetch.mjs')).href}
  return {home,dsh,data,env,write:(name,value)=>fs.writeFileSync(path.join(data,name),JSON.stringify(value)),run:(cmd,args=[])=>spawnSync(process.execPath,[path.join(root,'tools/commands/'+cmd+'.mjs'),...args],{env,encoding:'utf8',timeout:15000})}
 }
-const comment=['--oid','1','--bvid','BV1234567890','--message','test','--share','--auto','--reason','这个视频确实值得测试分享','--score','15','--rank','1','--dry']
+const comment=['--oid','1','--bvid','BV1234567890','--message','这个转场卡点剪得挺讲究(:з」∠)','--share','--auto','--reason','这个视频确实值得测试分享','--score','15','--rank','1','--dry']
 const dm=['--msg','BV1234567890','--share','--reason','这个视频确实值得测试分享','--score','15','--rank','1','--dry']
 
 test('issue 20: diary renders LF and CRLF narratives and JSONL identically', t=>{

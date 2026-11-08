@@ -92,12 +92,12 @@ test('wake prompt follows night.maxVideos instead of a hard-coded 5',()=>{
   const st={date:'2026-10-22',n:12}
   for(const mv of [1,3,5]){
     const lines=wakePrompt(st,'',mv).split(/\r?\n/)
-    const line=lines.find((l)=>l.includes('feed 选题'))
+    const line=lines.find((l)=>l.includes('feed --n')&&l.includes('选题'))
     assert.ok(line, '提示里应该有 feed 选题 这一行')
-    assert.match(line,new RegExp('≤'+mv+' 条'),'maxVideos='+mv+' 时应显示 ≤'+mv+' 条，实际：'+line)
+    assert.match(line,new RegExp('--n '+mv),'maxVideos='+mv+' 时应显示 --n '+mv+'，实际：'+line)
   }
   // 不传就按 5（向后兼容 ✓）
-  assert.match(wakePrompt(st,''),/≤5 条/)
+  assert.match(wakePrompt(st,''),/feed --n 5/)
 })
 
 test('wake prompt states the current share.via and only that route',()=>{
