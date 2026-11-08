@@ -1,20 +1,3 @@
-# ============================================================================
-# dsh-bili-whale —— whale profile 用户补丁（profile 层）
-# ============================================================================
-#
-# 这是**profile 层**补丁，落在 `~/.dsh/profiles/<profile>/cordis.patch.yml`。
-# 和仓库根目录的 `cordis.patch.yml`（bundle 层，只负责把本插件插进配置树）是两个文件：
-#   · bundle 层  -> dsh 启动时装配插件本身
-#   · profile 层 -> 装好后**这台机器上的 agent**怎么跑（模型 / 图片预算 / 压缩策略 / 权限）
-#
-# 安装：把本文件放到 `~/.dsh/profiles/<profile>/cordis.patch.yml`
-#       （`dsh --profile <profile> --dump-config` 可以确认是否被吃到）
-#
-# ⚠️ 里面的 `preset-standard` 是**整行覆盖** dsh-web-app 随包发布的 preset：
-#    profile patch 的 buildMap 不会下钻进 preset 的 `config.plugins`，
-#    所以只能整行替换（Web 编辑器保存也是这么做的）。升级 dsh-web-app 后需重新比对。
-# ============================================================================
-
 # 小Z · whale profile 用户补丁（2026-10-26 安装）
 # 默认模型：NVIDIA API（integrate.api.nvidia.com）的 z-ai/glm-5.3-flash
 # 密钥从 ~/.dsh/.credentials.yaml 的 NV_API_KEY 读取，不落在这里。
@@ -141,7 +124,16 @@
   config:
     welcomeNoticeVersion: 2026-09-28.1
 
-# ── preset-standard 覆盖：让压缩阈值真正生效（2026-11-02 清理）──────────
+# ── preset-standard 覆盖（2026-11-08 对齐 0.2.2-rc.1）──────────────
+# 新版随包 standard.patch.yml 有三处变化，已逐字同步：
+#   ① tool-fs 增加 config.applyPatch: false
+#   ② delegation 移除 tool-subagent-list-agents；tool-subagent 改为
+#      modelSelection/modelDiscovery
+#   ③ tool-plugin-manager 的 disabled 改为条件表达式 → 本 profile 仍固定 true
+# compaction-basic 额外加了压缩策略（0.2.2-rc.1 的配置项与 0.2.1-rc.2 完全一致）：
+#   thresholdRatio 0.25 → threshold = min(1000000*0.25, 967232-65536) = 250000
+#   retainRatio 0.08   → retain = floor(967232*0.08) = 77378 < 250000 ✓
+# 升级 dsh-web-app 后必须重新比对（用户覆盖会整体替换子列表）。
 - id: preset-standard
   name: '@deepseek-ai/dsh-agent-preset'
   config:
@@ -166,6 +158,9 @@
         disabled: !!js process.platform !== 'win32'
       - id: tool-fs
         name: '@deepseek-ai/dsh-tool-fs'
+        config:
+          # Set false to drop the apply_patch tool beside edit.
+          applyPatch: false
       - id: tool-fs-search
         name: '@deepseek-ai/dsh-tool-fs-search'
         config:
@@ -233,14 +228,13 @@
         config:
           - id: tool-subagent-control
             name: '@deepseek-ai/dsh-tool-subagent-control'
-          - id: tool-subagent-list-agents
-            name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
           - id: tool-subagent
             name: '@deepseek-ai/dsh-tool-subagent'
             config:
               provider: spawn
               toolName: subagent
-              modelSelectionSettings: true
+              modelSelection: true
+              modelDiscovery: true
           - id: tool-subagent-fork
             name: '@deepseek-ai/dsh-tool-subagent'
             config:
