@@ -19,6 +19,7 @@ import path from 'node:path'
 import { newReplies } from '../lib/feedback.mjs'
 import { config } from '../lib/config.mjs'
 import { NODE_EXE } from '../lib/nodebin.mjs'   // 2026-10-21：别用 process.execPath（Electron 里它是主程序 ✗）
+import { writeWithBackup } from '../lib/durable-write.mjs'
 
 const FILE = path.join((process.env.USERPROFILE || process.env.HOME || '/'), '.bili-ai', 'quota.json')
 // 额度与白名单优先来自统一配置（lib/config.mjs）；本文件自己的 quota.json 仍是运行账本
@@ -30,12 +31,18 @@ const DEFAULTS = { daily: config().quota?.daily ?? 2, scope: config().quota?.sco
 let corrupt = false
 const load = () => {
   let raw = {}
-  try { raw = JSON.parse(fs.readFileSync(FILE, 'utf8')) } catch { if (fs.existsSync(FILE)) corrupt = true }
+  try { raw = JSON.parse(fs.readFileSync(FILE, 'utf8')) } catch {
+    if (fs.existsSync(FILE)) {
+      // 2026-11-26：断电把主文件写成全 NUL 时用最后一份好账本，别让"发言账未知"永远挡住她
+      try { raw = JSON.parse(fs.readFileSync(FILE + '.bak', 'utf8')) }
+      catch { corrupt = true }
+    }
+  }
   // ⚠️ 只认 log（2026-10-17，Kimi 评审 #4）：daily/scope/shareDaily 永远来自 config（实时）；
   //   以前 load 会把 quota.json 里固化的旧值盖在新配置上 → 设置页改了不生效且无提示 ✗
   return { ...DEFAULTS, log: Array.isArray(raw.log) ? raw.log : [] }
 }
-const save = (q) => { fs.mkdirSync(path.dirname(FILE), { recursive: true }); fs.writeFileSync(FILE, JSON.stringify({ log: q.log ?? [] }, null, 2) + '\n') }
+const save = (q) => { writeWithBackup(FILE, JSON.stringify({ log: q.log ?? [] }, null, 2) + '\n') }
 // ── 沉默衰减（2026-10-18 加，主人定）────────────────────────────────
 // 反馈的定义：**任何表态都算**（回她的评论 / 点赞 / 在微信里说一句 / 让她做点事…）
 // 都没有 = 沉默。沉默 ≥ silentAfterDays(3) 天开始降，到 silentStopDays(7) 降到 0
