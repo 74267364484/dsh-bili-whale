@@ -1,11 +1,13 @@
-# 小Z · whale profile 用户补丁（2026-10-26 安装）
-# 默认模型：NVIDIA API（integrate.api.nvidia.com）的 z-ai/glm-5.3-flash
+# 小Z · whale profile 用户补丁（2026-10-26 安装，2026-11-26 换模型）
+# 默认模型：NVIDIA API（integrate.api.nvidia.com）的 minimaxai/minimax-m3.1-flash
+#   · 原生多模态（文本 + 图片），上下文 1,000,000 token，官方推荐 max_tokens 16384
+#   · 旧的 z-ai/glm-5.3-flash / z-ai/glm-5.3 仍保留在 models 里，可随时切回
 # 密钥从 ~/.dsh/.credentials.yaml 的 NV_API_KEY 读取，不落在这里。
 - id: agent-default-model
   name: "@deepseek-ai/dsh-agent-default-model"
   config:
     provider: nv
-    model: z-ai/glm-5.3-flash
+    model: minimaxai/minimax-m3.1-flash
 
 - id: llm-pi-ai
   name: "@deepseek-ai/dsh-llm-pi-ai"
@@ -62,6 +64,13 @@
         #   ② compaction 的 reservedCompletionTokens 直接取 requestHeader.config.maxTokens，
         #      384000 会吃掉 38% 的上下文预算。
         models:
+          - id: minimaxai/minimax-m3.1-flash
+            name: minimaxai/minimax-m3.1-flash
+            input:
+              - text
+              - image
+            contextWindow: 1000000
+            maxTokens: 16384
           - id: z-ai/glm-5.3-flash
             name: z-ai/glm-5.3-flash
             input:
