@@ -80,9 +80,24 @@ test('unrelated webhooks are not included in Bilibili request budgets',async t=>
  await s.guard.fetch('https://example.test/webhook',{method:'POST',body:'two'})
  assert.equal(s.calls(),2);assert.deepEqual(s.guard.status(),{})
 })
-test('corrupt protection state refuses network instead of resetting budgets',async t=>{
+test('corrupt protection state self-heals after a short cooldown instead of pausing forever',async t=>{
  const s=setup(t);fs.writeFileSync(path.join(s.directory,'traffic-state.json'),'{broken')
  await assert.rejects(s.guard.fetch('https://api.bilibili.com/x/one'),/损坏/);assert.equal(s.calls(),0)
+ // 坏文件已隔离留档，冷静期内仍然不发请求
+ assert.ok(fs.readdirSync(s.directory).some(name=>name.includes('corrupt-')))
+ await assert.rejects(s.guard.fetch('https://api.bilibili.com/x/two'),/暂停/)
+ assert.equal(s.calls(),0)
+ // 3 分钟一过自动恢复（2026-11-26：绝不再永久保护暂停）
+ s.advance(3*60_000+1000)
+ await s.guard.fetch('https://api.bilibili.com/x/three')
+ assert.equal(s.calls(),1)
+})
+test('broken main file falls back to the last good .bak',async t=>{
+ const s=setup(t)
+ await s.guard.fetch('https://api.bilibili.com/x/one')
+ fs.writeFileSync(path.join(s.directory,'traffic-state.json'),'\0\0\0\0')
+ await s.guard.fetch('https://api.bilibili.com/x/two')
+ assert.equal(s.calls(),2)
 })
 test('failed polling backs off to fifteen minutes and resets after success',()=>{
  assert.equal(pollDelay(60,0),60000);assert.equal(pollDelay(60,1),120000)

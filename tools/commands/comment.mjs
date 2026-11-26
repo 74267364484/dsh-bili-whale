@@ -20,7 +20,7 @@ import { execFileSync } from '../lib/capture.mjs'
 import { fileURLToPath } from 'node:url'
 import { config } from '../lib/config.mjs'
 import { validateShare } from '../lib/share-policy.mjs'
-import { checkStyle, reportStyle, pickKaomoji } from '../lib/style-guard.mjs'
+import { checkStyle, reportStyle } from '../lib/style-guard.mjs'
 import { apiGet } from '../lib/bili-api.mjs'
 import { NODE_EXE } from '../lib/nodebin.mjs'   // 2026-10-21：别用 process.execPath（Electron 里它是主程序 ✗）
 
@@ -198,38 +198,22 @@ if (!root && !parent) {
   }
 }
 
-// 2026-11-08：漏写颜文字时**自动补一个**（主人原话「机器人没有遵循用颜文字评论的规则」）
-//   只补"缺颜文字"这一种情况，而且必须是唯一硬伤才补：
-//   如果还同时有禁句 / 叫老大 / 结尾句号，就不帮她改（那些是内容问题，得她自己重写）
-//   补的颜文字按正文语气挑（pickKaomoji），补完再校验一次，保证最终发的正文恰好 1 个 ✓
-{
-  const kind = root || parent ? 'reply' : 'comment'
-  const before = checkStyle(message, { kind })
-  const onlyMissing = before.errors.length > 0
-    && before.errors.every((e) => e.startsWith('评论必须带 1 个颜文字'))
-  if (onlyMissing) {
-    const pick = pickKaomoji(message)
-    message = `${message.replace(/\s+$/, '')}${pick}`
-    console.log(`[自动补颜文字] 原来没带 → 末尾补上 ${pick} ✓（主人要求每条评论都带 1 个）`)
-  }
-}
-
 // 2026-10-31：**对外语言规范的代码层硬约束**（主人原话「没有遵循语言规范」）✓
 //   动机：规范只写在 persona.md 里当"人设"，她照样写「太棒了/干货满满/学到了」、
 //   公开喊「老大」、结尾带句号、一条小作文三段。这里把 persona「对外」那节变成可执行检查：
-//   · 硬伤（禁句/老大/结尾句号/颜文字超限）→ **--go 直接拒发**，--dry 打印出来让她改
+//   · 硬伤（禁句/老大/结尾句号）→ **--go 直接拒发**，--dry 打印出来让她改
 //   · 提醒（语气助词超限/太长/太短/提到后台词）→ 只提醒，不拦
 //   · --force 可放行硬伤（主人当场授权时用），--strict 把提醒也升级为拒发
 //   二级回复（--root/--parent）同样受检：那些也是公开可见的。
+// 2026-11-26：表情/颜文字不再校验条数（主人要求"灵活使用、不要数量限制"）
 const FORCE = process.argv.includes('--force')
 const STRICT = process.argv.includes('--strict')
-// 2026-11-08：公开评论必须恰好带 1 个颜文字（顶层评论 = comment，回复某人 = reply，规则相同）
 const styleRes = checkStyle(message, { kind: root || parent ? 'reply' : 'comment' })
 console.log('\n' + reportStyle(styleRes))
 const styleFatal = styleRes.errors.length > 0 && !FORCE
 const styleStrictFatal = (styleRes.errors.length > 0 || (STRICT && styleRes.warns.length > 0)) && !FORCE
 if (styleStrictFatal && !dry) {
-  console.error('\n  → 对外规范没过，这条不发了。改写后重试（把禁句去掉、结尾别加句号、别叫「老大」、**评论要带 1 个颜文字**）。')
+  console.error('\n  → 对外规范没过，这条不发了。改写后重试（把禁句去掉、结尾别加句号、别叫「老大」）。')
   console.error('  → 确实要原样发：加 --force（主人当场授权）。')
   process.exit(2)
 }

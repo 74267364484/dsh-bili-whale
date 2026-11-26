@@ -36,11 +36,16 @@ test('partial history failure and non-progressing pagination do not advance stat
  b.put({pages:{0:page([row(3),row(2)],1),2:{code:-500}}});assert.equal(b.run('--peek').status,3);assert.equal(fs.readFileSync(b.state,'utf8'),before)
  b.put({pages:{0:page([row(3),row(2)],1),2:page([row(3),row(2)],1)}});assert.equal(b.run('--peek').status,3);assert.equal(fs.readFileSync(b.state,'utf8'),before)
 })
-test('empty is exit 1; baseline skips both directions; corrupt state is preserved; legacy pending remains ackable',t=>{
+test('empty is exit 1; baseline skips both directions; corrupt state is quarantined and self-healed; legacy pending remains ackable',t=>{
  const b=box(t);b.put(page([]));const r=b.run('--peek');assert.equal(r.status,1);assert.equal(JSON.parse(r.stdout).hit,false)
  b.put(page([row(2,1000,111),row(1,999)]));assert.equal(b.run('--baseline').status,0);assert.equal(b.run('--peek').status,1)
  b.save({owner:'222',pending:{mid:'222',hit:true,receipt:'legacy',ts:1001,key:'old',text:'pending'}});assert.equal(b.peek().receipt,'legacy');assert.equal(b.run('--ack','legacy').status,0)
- fs.writeFileSync(b.state,'broken');assert.equal(b.run('--peek').status,3);assert.equal(fs.readFileSync(b.state,'utf8'),'broken')
+ fs.writeFileSync(b.state,'broken');fs.rmSync(b.state+'.bak',{force:true})
+ // 2026-11-26：主备都坏 → 隔离坏文件、按当前最新一条重建基线，绝不再永久卡住私信轮询
+ b.put(page([row(2,1000),row(1,999)]))
+ const healed=b.run('--peek');assert.equal(healed.status,0,healed.stderr)
+ assert.ok(fs.readdirSync(path.dirname(b.state)).some(n=>n.includes('dm-await-state.json.corrupt-')))
+ assert.equal(b.run('--peek').status,1)
 })
 test('page cap fails without skipping unread messages',t=>{
  const b=box(t);b.save({owner:'222',lastSeen:1});const before=fs.readFileSync(b.state,'utf8'),pages={}

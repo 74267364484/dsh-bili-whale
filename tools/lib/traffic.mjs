@@ -3,6 +3,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { configPath } from './paths.mjs'
+import { readJsonState, writeWithBackup } from './durable-write.mjs'
 
 // 2026-10-28 主人定「不要有数量限制」→ 写预算默认放开（0 = 不限）✓
 //   保留 writeGapSec（写间隔）—— 那是防风控的**节奏**，不是条数上限 ✓
@@ -35,18 +36,19 @@ export class TrafficError extends Error { constructor(message) { super(message);
 export function createTrafficGuard({ directory, transport = (...a) => globalThis.fetch(...a), settings = riskSettings, now = Date.now, sleep = delay } = {}) {
   const stateFile = path.join(directory, 'traffic-state.json'), lockFile = stateFile + '.lock'
   function read() {
-    try { const s = JSON.parse(fs.readFileSync(stateFile, 'utf8')); if (!s || typeof s !== 'object') throw Error('invalid state'); return s }
-    catch (e) {
-      if (e.code === 'ENOENT') return {}
-      // 2026-11-01：断电/崩溃会把状态文件落成全 NUL（NTFS 分配了簇但数据没刷盘）。
-      //   实测那次整条鱼从 10-31 22:40 起静默停摆 11 小时（假"保护暂停"）。
-      //   主文件读不出来时用最后一份好状态 .bak 自愈，别再整块停摆。
-      try {
-        const b = JSON.parse(fs.readFileSync(stateFile + '.bak', 'utf8'))
-        if (b && typeof b === 'object' && !Array.isArray(b)) return b
-      } catch {}
-      throw new TrafficError('请求保护状态损坏，请检查 traffic-state.json；已停止网络请求')
+    // 2026-11-26：断电把主文件写成全 NUL 时，先读 .bak 自愈；**主备都坏**则隔离坏文件、
+    //   从空状态恢复并给 3 分钟冷静期 —— 绝不再抛"请求保护状态损坏"把整条鱼永久卡住。
+    //   （11-10 就是这么静默了 16 天：主备同时全 NUL，pauseReason 每轮都抛错。）
+    const r = readJsonState(stateFile)
+    if (!r.recovered) return r.state
+    console.warn(`[traffic] 状态文件损坏（source=${r.source}），已自愈${r.quarantined?.length ? '：坏文件留档 ' + r.quarantined.join(' , ') : ''}`)
+    if (r.source === 'reset') {
+      // 冷静期要**落盘**才有效：否则下一次 read() 看到文件已被隔离（ENOENT）就当全新状态，立即放行
+      const fresh = { until: now() + 3 * 60_000, reason: '状态文件损坏，自愈冷却 3 分钟' }
+      try { writeWithBackup(stateFile, JSON.stringify(fresh)) } catch {}
+      return fresh
     }
+    return r.state
   }
   async function locked(fn) {
     fs.mkdirSync(directory, { recursive: true })
@@ -70,14 +72,8 @@ export function createTrafficGuard({ directory, transport = (...a) => globalThis
     }
     try {
       const s = read(), result = fn(s)
-      const temp = stateFile + '.' + process.pid + '.tmp'
-      try {
-        fs.writeFileSync(temp, JSON.stringify(s))
-        // 留一份最后的好状态：断电把主文件写成全 NUL 时靠它自愈（见 read()）
-        try { fs.writeFileSync(stateFile + '.bak', JSON.stringify(s)) } catch {}
-        fs.renameSync(temp, stateFile)
-      }
-      finally { fs.rmSync(temp, { force: true }) }
+      // 2026-11-26：fsync 落盘（临时文件 → rename），主备都刷一次，防断电全 NUL
+      writeWithBackup(stateFile, JSON.stringify(s))
       return result
     } finally { fs.closeSync(fd); fs.unlinkSync(lockFile) }
   }
